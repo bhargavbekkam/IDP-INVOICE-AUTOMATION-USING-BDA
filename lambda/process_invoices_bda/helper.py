@@ -37,6 +37,49 @@ def convert_pdf_to_png(input_bucket, input_key, output_bucket, output_key):
     save_image_to_s3(pil_image, output_bucket, output_key)
     return output_bucket, output_key
 
+def trim_pdf_to_max_pages(pdf_bytes, max_pages):
+    """Returns (trimmed_pdf_bytes, total_pages, pages_processed) with only the first max_pages pages.
+    Raises pypdfium2.PdfiumError / ValueError if the file cannot be opened as a PDF (corrupt or password-protected)."""
+    max_pages = max(1, int(max_pages))
+    pdf = pypdfium2.PdfDocument(pdf_bytes)
+    total_pages = len(pdf)
+    if total_pages < 1:
+        raise ValueError("PDF has no pages")
+    pages_processed = min(total_pages, max_pages)
+    trimmed_pdf = pypdfium2.PdfDocument.new()
+    trimmed_pdf.import_pages(pdf, pages=list(range(pages_processed)))
+    with BytesIO() as pdf_buffer:
+        trimmed_pdf.save(pdf_buffer)
+        trimmed_pdf_bytes = pdf_buffer.getvalue()
+    # cost guard: never hand over more than max_pages pages
+    if len(pypdfium2.PdfDocument(trimmed_pdf_bytes)) > max_pages:
+        raise RuntimeError("Trimmed PDF has more pages than max_pages")
+    return trimmed_pdf_bytes, total_pages, pages_processed
+
+def stage_first_pages_of_pdf(input_bucket, input_key, output_bucket, output_key, max_pages):
+    """Saves a PDF with only the first max_pages pages in the staging bucket.
+    Returns the page info, or None if the file cannot be opened as a PDF."""
+    pdf_obj = s3_resource.Object(input_bucket, input_key).get()['Body'].read()
+    try:
+        trimmed_pdf_bytes, total_pages, pages_processed = trim_pdf_to_max_pages(pdf_obj, max_pages)
+    except (pypdfium2.PdfiumError, ValueError) as e:
+        print(f"Could not open PDF {input_key}: {e}")
+        return None
+    print("Number of pages:", total_pages, "pages processed:", pages_processed)
+    truncated = total_pages > pages_processed
+    s3_client.put_object(
+        Bucket=output_bucket,
+        Key=output_key,
+        Body=trimmed_pdf_bytes,
+        ContentType="application/pdf",
+        Metadata={
+            "total-pages": str(total_pages),
+            "pages-processed": str(pages_processed),
+            "truncated": "true" if truncated else "false",
+        },
+    )
+    return {"total_pages": total_pages, "pages_processed": pages_processed, "truncated": truncated}
+
 def invoke_data_automation(input_s3_uri, output_s3_uri, blueprint_arn, data_automation_profile_arn):
     response = bda_runtime_client.invoke_data_automation_async(
                                 dataAutomationProfileArn=data_automation_profile_arn,

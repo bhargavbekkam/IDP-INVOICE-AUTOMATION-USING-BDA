@@ -142,12 +142,15 @@ def get_custom_output_path(s3_path):
 
 
 # Function to draw bounding boxes and confidence scores
-def draw_invoices_annotations(json_data, draw, image_width, image_height):
+def draw_invoices_annotations(json_data, draw, image_width, image_height, page=None):
     font = ImageFont.load_default()
     for key, value in json_data.items():
         if isinstance(value, dict) and value.get("success"):
             confidence = value.get("confidence", 0)
             for geometry in value.get("geometry", []):
+                # multi-page documents: only draw the boxes of the given page
+                if page is not None and geometry.get("page") != page:
+                    continue
                 bbox = geometry['boundingBox']
                 left = bbox['left'] * image_width
                 top = bbox['top'] * image_height
@@ -166,7 +169,7 @@ def draw_invoices_annotations(json_data, draw, image_width, image_height):
                 
         elif isinstance(value, list):  # For nested drug details or similar
             for item in value:
-                draw_invoices_annotations(item, draw, image_width, image_height)
+                draw_invoices_annotations(item, draw, image_width, image_height, page)
                          
 def annotate_form_and_save_to_s3(input_s3_uri, json_data, op_bucket, op_key, doc_type):
     # Parse S3 URI
@@ -204,6 +207,38 @@ def annotate_form_and_save_to_s3(input_s3_uri, json_data, op_bucket, op_key, doc
     
     print(f"Annotated image saved to S3: s3://{op_bucket}/{op_key}")
 
+PAGE_INFO_METADATA_KEYS = ["total-pages", "pages-processed", "truncated"]
+
+def read_pdf_and_page_info_from_s3(bucket, key):
+    """Returns the staged PDF bytes and its page info metadata (total-pages, pages-processed, truncated)."""
+    response = s3_client.get_object(Bucket=bucket, Key=key)
+    pdf_bytes = response['Body'].read()
+    metadata = response.get('Metadata', {})
+    page_info_metadata = {k: metadata[k] for k in PAGE_INFO_METADATA_KEYS if k in metadata}
+    return pdf_bytes, page_info_metadata
+
+def annotate_pdf_pages_and_save_to_s3(pdf_bytes, json_data, op_bucket, op_key_prefix, doc_type):
+    """Renders every page of the staged PDF, draws the boxes of that page and saves <op_key_prefix>.page-<n>.png"""
+    pdf = pypdfium2.PdfDocument(pdf_bytes)
+    op_keys = []
+    for page_index in range(len(pdf)):
+        page_number = page_index + 1  # BDA page numbers start at 1
+        bitmap = pdf[page_index].render(scale=2, rotation=0)
+        image = bitmap.to_pil()
+        draw = ImageDraw.Draw(image)
+        image_width, image_height = image.size
+
+        if doc_type =="invoices":
+            draw_invoices_annotations(json_data, draw, image_width, image_height, page=page_number)
+
+        img_byte_arr = BytesIO()
+        image.save(img_byte_arr, format='PNG')
+        op_key = f"{op_key_prefix}.page-{page_number}.png"
+        s3_client.put_object(Body=img_byte_arr.getvalue(), Bucket=op_bucket, Key=op_key)
+        print(f"Annotated image saved to S3: s3://{op_bucket}/{op_key}")
+        op_keys.append(op_key)
+    return op_keys
+
 def get_s3_bucket_and_key(s3_input_uri):
     parsed_uri = urlparse(s3_input_uri)
     
@@ -223,11 +258,11 @@ def get_s3_bucket_and_key(s3_input_uri):
 
     return bucket, key
     
-def save_json_to_s3(bucket, key, llm_json_response):
+def save_json_to_s3(bucket, key, llm_json_response, metadata=None):
     # Convert the dictionary to a JSON string
     json_content = json.dumps(llm_json_response, indent=4)
     # Save the JSON string to S3 (S3 expects bytes, so we encode the string to bytes)
-    s3_client.put_object(Bucket=bucket, Key=key, Body=json_content.encode('utf-8'))
+    s3_client.put_object(Bucket=bucket, Key=key, Body=json_content.encode('utf-8'), Metadata=metadata or {})
 
 def list_s3_items(bucket_name, prefix):
     items = []

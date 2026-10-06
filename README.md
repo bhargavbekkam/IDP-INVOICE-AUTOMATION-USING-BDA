@@ -60,7 +60,7 @@ Steps:
 
 4. **Invoice Processing Workflow**:
    - The `process_invoices_bda` Lambda performs the following actions:
-     - **Convert PDF to PNG**: The invoice is converted into PNG format and stored in the **Staging Bucket** (`/staging_bda`).
+     - **Stage the PDF**: A copy of the invoice with only its first `max_pages` pages (default 5, set in `project_config.json`) is stored in the **Staging Bucket** under the same key (`invoices/invoice1.pdf`). Pages beyond the limit are never sent to Bedrock Data Automation. The copy carries the object metadata `total-pages`, `pages-processed` and `truncated`. PNG and JPG files are sent as they are.
      - **Retrieve Invoices Blueprint ARN**: It fetches the ARN of the blueprint required for data automation from the **Systems Manager Parameter Store** (`/my-demo/invoices_blueprint`).
      - **Invoke Bedrock Data Automation**: The Lambda function invokes **Amazon Bedrock Data Automation** as an **asynchronous job** to process the invoice.
 
@@ -74,8 +74,10 @@ Steps:
    - The `draw_bboxes_invoices` Lambda:
      - Annotates the processed invoice with **bounding boxes** (for detected fields or objects) and **confidence scores**.
      - Saves the annotated results to the **Output S3 Bucket** with the following paths:
-       - **Extracted Data**: `/bda_json/invoices/invoice1.json`
-       - **Annotated Image**: `/bda_bbox_img/invoices/invoice1.png`
+       - **Extracted Data**: `/bda_json/inference_results/invoices/invoice1.pdf.json` (with the object metadata `total-pages`, `pages-processed` and `truncated`)
+       - **Bounding Boxes and Confidence**: `/bda_json/explainability_info_result/invoices/invoice1.pdf.json`
+       - **Annotated Images**: `/bda_bbox_img/invoices/invoice1.pdf.page-1.png`, one per processed page
+       - For PNG and JPG uploads: `/bda_json/inference_results/invoices/invoice1.png.json` and `/bda_bbox_img/invoices/invoice1.png.png`
 
 
 ## Architecture Diagram

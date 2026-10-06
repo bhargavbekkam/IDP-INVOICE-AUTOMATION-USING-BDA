@@ -37,6 +37,8 @@ class IDPStack(Stack):
         ssm_parameter_name = variables["invoices"]["ssm_parameter_name"]
         invoices_blueprint_name = variables["invoices"]["blueprint_name"]
         invoices_doc_type = variables["invoices"]["doc_type"]
+        # only the first max_pages pages of a PDF are sent to BDA
+        invoices_max_pages = variables["invoices"]["max_pages"]
         # BDA requires a cross-region inference profile (us./eu./apac. prefix depends on the deploy region)
         data_automation_profile_id = variables["data_automation_profile_id"]
         data_automation_profile_arn = f"arn:aws:bedrock:{self.region}:{self.account}:data-automation-profile/{data_automation_profile_id}"
@@ -365,6 +367,7 @@ class IDPStack(Stack):
                                     "OUTPUT_BUCKET":output_bucket_s3.bucket_name,
                                     "SSM_PARAMETER_NAME": ssm_parameter_name,
                                     "DATA_AUTOMATION_PROFILE_ARN": data_automation_profile_arn,
+                                    "MAX_PAGES": str(invoices_max_pages),
                                 }
                             )
         input_bucket_s3.grant_read(process_invoices_bda_lambda)

@@ -19,6 +19,7 @@ def lambda_handler(event, context):
         output_bucket = os.getenv("OUTPUT_BUCKET", "")
         ssm_param_name = os.getenv("SSM_PARAMETER_NAME", "/my-demo/inovices_blueprint_arn")
         data_automation_profile_arn = os.getenv("DATA_AUTOMATION_PROFILE_ARN", "")
+        max_pages = int(os.getenv("MAX_PAGES", "5"))
 
     except:
         print("dev mode activated")
@@ -28,6 +29,7 @@ def lambda_handler(event, context):
         output_bucket = ""
         ssm_param_name = "/my-demo/inovices_blueprint_arn"
         data_automation_profile_arn = ""
+        max_pages = 5
 
     ## consutructing paths
     input_s3_uri = f"s3://{input_bucket}/{key}"
@@ -37,7 +39,15 @@ def lambda_handler(event, context):
     file_extension = key.split(".")[-1]
     if file_extension == "pdf":
         print("PDF file detected")
-        _, key = convert_pdf_to_png(input_bucket, key, stagging_bucket, f"{key}.png")
+        ## Only the first max_pages pages are staged and sent to BDA (cost guard)
+        page_info = stage_first_pages_of_pdf(input_bucket, key, stagging_bucket, key, max_pages)
+        if page_info is None:
+            print(f"Skipping s3://{input_bucket}/{key}: it cannot be opened as a PDF (corrupt or password-protected). BDA was not invoked.")
+            return {'statusCode': 200,
+                    'body': json.dumps({'skipped': key})
+                }
+        if page_info["truncated"]:
+            print(f"PDF truncated: key={key}, total_pages={page_info['total_pages']}, pages_processed={page_info['pages_processed']}")
         input_s3_uri = f"s3://{stagging_bucket}/{key}"
     
     blueprint_arn = get_parameter_from_ssm(ssm_param_name)

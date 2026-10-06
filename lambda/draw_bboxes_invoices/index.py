@@ -19,7 +19,7 @@ def lambda_handler(event, context):
     except:
         print("dev mode activated")
         input_bucket= ""
-        input_key = "invoices/test_invoice_0_1.pdf.png"
+        input_key = "invoices/test_invoice_0_1.pdf"
         output_bucket = ""
         output_key = "raw_bda_job_outputs/ef33d28a-8503-4cfa-9ea7-1b36ac8de7c2/0"
         doc_type = "invoices"
@@ -43,14 +43,25 @@ def lambda_handler(event, context):
     inference_results = custom_op_json["inference_result"]
     explainability_info_result = custom_op_json['explainability_info'][0]
     
-    # Save the inference results in s3 output bucket
-    save_json_to_s3(output_bucket, output_inference_results_json_key, inference_results)
-    
-    # Save the bounding boxes and all in outuut bucket
-    save_json_to_s3(output_bucket, output_explainability_info_result_json_key, explainability_info_result)
-    
-    # Annotate and save image in output S3 bucket
-    annotate_form_and_save_to_s3(input_s3_uri, explainability_info_result, output_bucket, output_bbox_image_key, doc_type=doc_type)
+    if input_key.split(".")[-1] == "pdf":
+        # PDF input: the staged PDF holds only the processed pages, its metadata holds the page info
+        pdf_bytes, page_info_metadata = read_pdf_and_page_info_from_s3(input_bucket, input_key)
+
+        # Save the inference results and the bounding boxes in s3 output bucket, with the page info as object metadata
+        save_json_to_s3(output_bucket, output_inference_results_json_key, inference_results, metadata=page_info_metadata)
+        save_json_to_s3(output_bucket, output_explainability_info_result_json_key, explainability_info_result, metadata=page_info_metadata)
+
+        # Annotate and save one image per processed page in output S3 bucket
+        annotate_pdf_pages_and_save_to_s3(pdf_bytes, explainability_info_result, output_bucket, f"bda_bbox_img/{input_key}", doc_type=doc_type)
+    else:
+        # Save the inference results in s3 output bucket
+        save_json_to_s3(output_bucket, output_inference_results_json_key, inference_results)
+
+        # Save the bounding boxes and all in outuut bucket
+        save_json_to_s3(output_bucket, output_explainability_info_result_json_key, explainability_info_result)
+
+        # Annotate and save image in output S3 bucket
+        annotate_form_and_save_to_s3(input_s3_uri, explainability_info_result, output_bucket, output_bbox_image_key, doc_type=doc_type)
         
     return {'statusCode': 200,
             'body': json.dumps({

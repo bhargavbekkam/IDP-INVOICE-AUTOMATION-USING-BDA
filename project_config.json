@@ -9,6 +9,7 @@
   "invoices":{
     "ssm_parameter_name": "/my-demo/inovices_blueprint_arn",
     "blueprint_name":"invoices_blueprint",
-    "doc_type":"invoices"
+    "doc_type":"invoices",
+    "max_pages": 5
   }
 }
