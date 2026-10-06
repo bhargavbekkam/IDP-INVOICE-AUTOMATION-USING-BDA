@@ -18,6 +18,7 @@ def lambda_handler(event, context):
         stagging_bucket = os.getenv("STAGGING_BUCKET", "")
         output_bucket = os.getenv("OUTPUT_BUCKET", "")
         ssm_param_name = os.getenv("SSM_PARAMETER_NAME", "/my-demo/inovices_blueprint_arn")
+        data_automation_profile_arn = os.getenv("DATA_AUTOMATION_PROFILE_ARN", "")
 
     except:
         print("dev mode activated")
@@ -26,6 +27,7 @@ def lambda_handler(event, context):
         key="invoices/test_invoice_0_1.pdf"
         output_bucket = ""
         ssm_param_name = "/my-demo/inovices_blueprint_arn"
+        data_automation_profile_arn = ""
 
     ## consutructing paths
     input_s3_uri = f"s3://{input_bucket}/{key}"
@@ -41,7 +43,7 @@ def lambda_handler(event, context):
     blueprint_arn = get_parameter_from_ssm(ssm_param_name)
 
     ## Invoke the data automation job
-    invoke_response = invoke_data_automation(input_s3_uri, job_output_s3_uri, blueprint_arn)
+    invoke_response = invoke_data_automation(input_s3_uri, job_output_s3_uri, blueprint_arn, data_automation_profile_arn)
     invocation_arn = invoke_response['invocationArn']
     print("Job successfully invoked with invocation_arn", invocation_arn)
         

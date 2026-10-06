@@ -83,8 +83,9 @@ def get_or_create_blueprint(blueprint_name, blueprint_file_name):
         return blueprint_arn
 
 
-def invoke_data_automation(input_s3_uri, output_s3_uri, blueprint_arn):
+def invoke_data_automation(input_s3_uri, output_s3_uri, blueprint_arn, data_automation_profile_arn):
     response = bda_runtime_client.invoke_data_automation_async(
+                                dataAutomationProfileArn=data_automation_profile_arn,
                                 inputConfiguration={
                                     's3Uri': input_s3_uri
                                 },

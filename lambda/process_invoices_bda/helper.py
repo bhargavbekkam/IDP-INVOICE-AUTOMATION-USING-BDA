@@ -37,8 +37,9 @@ def convert_pdf_to_png(input_bucket, input_key, output_bucket, output_key):
     save_image_to_s3(pil_image, output_bucket, output_key)
     return output_bucket, output_key
 
-def invoke_data_automation(input_s3_uri, output_s3_uri, blueprint_arn):
+def invoke_data_automation(input_s3_uri, output_s3_uri, blueprint_arn, data_automation_profile_arn):
     response = bda_runtime_client.invoke_data_automation_async(
+                                dataAutomationProfileArn=data_automation_profile_arn,
                                 inputConfiguration={
                                     's3Uri': input_s3_uri
                                 },

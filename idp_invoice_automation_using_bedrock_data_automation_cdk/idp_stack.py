@@ -37,6 +37,9 @@ class IDPStack(Stack):
         ssm_parameter_name = variables["invoices"]["ssm_parameter_name"]
         invoices_blueprint_name = variables["invoices"]["blueprint_name"]
         invoices_doc_type = variables["invoices"]["doc_type"]
+        # BDA requires a cross-region inference profile (us./eu./apac. prefix depends on the deploy region)
+        data_automation_profile_id = variables["data_automation_profile_id"]
+        data_automation_profile_arn = f"arn:aws:bedrock:{self.region}:{self.account}:data-automation-profile/{data_automation_profile_id}"
 
         # Create a VPC (if you don't already have one)
         public_subnet = ec2.SubnetConfiguration(
@@ -361,6 +364,7 @@ class IDPStack(Stack):
                                     "STAGGING_BUCKET":stagging_bucket_s3.bucket_name,
                                     "OUTPUT_BUCKET":output_bucket_s3.bucket_name,
                                     "SSM_PARAMETER_NAME": ssm_parameter_name,
+                                    "DATA_AUTOMATION_PROFILE_ARN": data_automation_profile_arn,
                                 }
                             )
         input_bucket_s3.grant_read(process_invoices_bda_lambda)
@@ -372,7 +376,9 @@ class IDPStack(Stack):
             actions=["bedrock:InvokeDataAutomationAsync","bedrock:GetDataAutomationStatus",],
             resources= [f"arn:aws:bedrock:{self.region}:{self.account}:blueprint/*",
                         f"arn:aws:bedrock:{self.region}:{self.account}:data-automation-project/*",
-                        f"arn:aws:bedrock:{self.region}:{self.account}:data-automation-invocation/*",]
+                        f"arn:aws:bedrock:{self.region}:{self.account}:data-automation-invocation/*",
+                        # cross-region inference: the profile may route to any region in its geography
+                        f"arn:aws:bedrock:*:{self.account}:data-automation-profile/{data_automation_profile_id}",]
         )
         ssm_get_policy_statement = iam.PolicyStatement(
             effect=iam.Effect.ALLOW,
@@ -411,13 +417,103 @@ class IDPStack(Stack):
             description='EventBridge rule to trigger Lambda when BDA job completes',
             rule_name="BDAJobCompletionRule",
             event_pattern=events.EventPattern(
-                source=["aws.bedrock-data-insights"],
-                detail_type= ["Insights Extraction Job Completed"]
+                source=["aws.bedrock"],
+                detail_type= ["Bedrock Data Automation Job Succeeded"]
             )
         )
 
         # Add State Change Lambda function as a target to the EventBridge rule
         event_bridge_job_completion_rule.add_target(targets.LambdaFunction(draw_bboxes_invoices_lambda))
+
+        ######################################################################
+        ##################### Email Ingestion (POC) ##########################
+        ######################################################################
+        # Create the raw email bucket
+        raw_email_bucket_s3 = s3.Bucket(
+            self,
+            "RawEmailBucket",
+            removal_policy=RemovalPolicy.DESTROY,
+            block_public_access=s3.BlockPublicAccess.BLOCK_ALL,
+            encryption=s3.BucketEncryption.S3_MANAGED,
+            server_access_logs_bucket=access_logs_bucket,
+            enforce_ssl=True,
+            auto_delete_objects=True,
+            lifecycle_rules=[s3.LifecycleRule(expiration=Duration.days(30))],
+        )
+
+        ##################### Poll Mailbox Lambda #####################
+        poll_mailbox_lambda = _lambda.Function(self,
+                                "poll_mailbox",
+                                code=_lambda.Code.from_asset("./lambda/poll_mailbox"),
+                                runtime=_lambda.Runtime.PYTHON_3_12,
+                                architecture=_lambda.Architecture.ARM_64,
+                                memory_size=512,
+                                timeout=Duration.seconds(100), # shorter than the 2 minutes schedule
+                                handler="index.lambda_handler",
+                                layers=[boto3_layer],
+                                retry_attempts=0, # the next scheduled run is the retry
+                                environment={
+                                    "RAW_EMAIL_BUCKET": raw_email_bucket_s3.bucket_name,
+                                }
+                            )
+        poll_mailbox_put_policy_statement = iam.PolicyStatement(
+            effect=iam.Effect.ALLOW,
+            actions=["s3:PutObject"],
+            resources= [raw_email_bucket_s3.arn_for_objects("emails/*")]
+        )
+        # needed to skip emails that are already saved (one LIST per run)
+        poll_mailbox_list_policy_statement = iam.PolicyStatement(
+            effect=iam.Effect.ALLOW,
+            actions=["s3:ListBucket"],
+            resources= [raw_email_bucket_s3.bucket_arn],
+            conditions={"StringLike": {"s3:prefix": ["emails/*"]}}
+        )
+        poll_mailbox_lambda.add_to_role_policy(poll_mailbox_put_policy_statement)
+        poll_mailbox_lambda.add_to_role_policy(poll_mailbox_list_policy_statement)
+
+        poll_mailbox_schedule_rule = events.Rule(
+            self,
+            'PollMailboxScheduleRule',
+            description='EventBridge rule to poll the mailbox every 2 minutes',
+            schedule=events.Schedule.rate(Duration.minutes(2))
+        )
+        poll_mailbox_schedule_rule.add_target(targets.LambdaFunction(poll_mailbox_lambda, retry_attempts=0))
+
+        ##################### Extract Attachments Lambda #####################
+        extract_attachments_lambda = _lambda.Function(self,
+                                "extract_attachments",
+                                code=_lambda.Code.from_asset("./lambda/extract_attachments"),
+                                runtime=_lambda.Runtime.PYTHON_3_12,
+                                architecture=_lambda.Architecture.ARM_64,
+                                memory_size=512,
+                                timeout=Duration.seconds(60),
+                                handler="index.lambda_handler",
+                                layers=[boto3_layer],
+                                environment={
+                                    "INPUT_BUCKET": input_bucket_s3.bucket_name,
+                                }
+                            )
+        extract_attachments_get_policy_statement = iam.PolicyStatement(
+            effect=iam.Effect.ALLOW,
+            actions=["s3:GetObject"],
+            resources= [raw_email_bucket_s3.arn_for_objects("emails/*")]
+        )
+        extract_attachments_put_policy_statement = iam.PolicyStatement(
+            effect=iam.Effect.ALLOW,
+            actions=["s3:PutObject"],
+            resources= [input_bucket_s3.arn_for_objects("invoices/*")]
+        )
+        extract_attachments_lambda.add_to_role_policy(extract_attachments_get_policy_statement)
+        extract_attachments_lambda.add_to_role_policy(extract_attachments_put_policy_statement)
+
+        raw_email_bucket_s3.add_event_notification(
+                s3.EventType.OBJECT_CREATED,
+                aws_s3_notifications.LambdaDestination(extract_attachments_lambda),
+                s3.NotificationKeyFilter(
+                                    prefix="emails/",
+                                    suffix=".eml",
+                                ),
+            )
 
         #######################################################################
         ######################### CDK Nag Suppression #########################
@@ -426,6 +522,8 @@ class IDPStack(Stack):
                                                    process_input_files_lambda.role,
                                                    process_invoices_bda_lambda.role,
                                                    draw_bboxes_invoices_lambda.role,
+                                                   poll_mailbox_lambda.role,
+                                                   extract_attachments_lambda.role,
                                                    ],
                             suppressions=[ {
                                                 "id": "AwsSolutions-IAM4",
@@ -443,6 +541,8 @@ class IDPStack(Stack):
                                                    process_input_files_lambda,
                                                    process_invoices_bda_lambda,
                                                    draw_bboxes_invoices_lambda,
+                                                   poll_mailbox_lambda,
+                                                   extract_attachments_lambda,
                                                    ],
                             suppressions=[  {   "id": "AwsSolutions-L1", 
                                                 "reason": "This code is for demo purposes. So using Python 3.12."

@@ -5,6 +5,7 @@
     "cidr_range": "10.0.0.0/16",
     "cidr_mask": 24
   },
+  "data_automation_profile_id": "us.data-automation-v1",
   "invoices":{
     "ssm_parameter_name": "/my-demo/inovices_blueprint_arn",
     "blueprint_name":"invoices_blueprint",
